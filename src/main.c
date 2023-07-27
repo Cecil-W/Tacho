@@ -2,18 +2,20 @@
 #include <inttypes.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/queue.h"
 #include "driver/gpio.h"
+#include "esp_timer.h"
 
-static QueueHandle_t speed_queue = NULL;
 static TaskHandle_t screen_updater_task_handle = NULL;
-// currently i dont need to seperate the screen update and speed calculation
-//static TaskHandle_t speed_calc_task_handle = NULL;
 
-volatile uint32_t ulRotationCount = 0;
+volatile float isr_speed = 0;
 static spinlock_t xISRLock;
-const uint64_t GPIO_SENSOR_INPUT = 18;
+const uint32_t GPIO_SENSOR_INPUT = 18;
 
+/// @brief Timer needs to be started before calling this function
+/// @return Time since boot in milli seconds
+uint64_t millis() {
+	return (esp_timer_get_time() / 1000UL);
+}
 
 /*		recorde the time when 1 wheel rototation was completed
 		calculate the speed? or save the timestamp to reduce time in the ISR
@@ -26,7 +28,13 @@ const uint64_t GPIO_SENSOR_INPUT = 18;
 		i think a constant refresh rate is better
 */
 static void vRotationSensorISR(void* arg) {
-	ulRotationCount++;
+	static uint64_t time_of_last_ISR = 0;
+	uint64_t time = millis();
+
+	// speed = distance traveled in 1 rotation / time this rotation took
+	const uint32_t mm_per_rotation = 1953.08f;
+	isr_speed = mm_per_rotation / (time - time_of_last_ISR);
+	time_of_last_ISR = time;
 }
 
 /* TODO: create task to update the screen with:
@@ -44,49 +52,35 @@ static void screen_update_task(void* arg) {
 	// initialize wake time 
 	xLastWakeTime  = xTaskGetTickCount();
 	for (;;) {
-		//currently not using the return value
+		// currently not using the return value
 		xWasDelayed = xTaskDelayUntil(&xLastWakeTime, xFrequency);
-		if (xWasDelayed == pdFALSE) {
-			// dimension=[cm/ms] == 10 m/s == 
-			float ulSpeed = 0;
-			static float avg_speed = 0.0f;
-			// cycle multiplier to account for periods where no rotation happens
-			static uint16_t usNoRotationCount = 1;
+		
+		static float avg_speed = 0.0f;		
+		// read the speed 
+		taskENTER_CRITICAL(&xISRLock);
+		uint32_t local_speed = isr_speed;
+		taskEXIT_CRITICAL(&xISRLock);
 
-			// read and then clear rotation counter 
-			uint32_t ulRotations = 0;
-			taskENTER_CRITICAL(&xISRLock);
-			ulRotations = ulRotationCount;
-			ulRotationCount = 0;
-			taskEXIT_CRITICAL(&xISRLock);
-
-			// calulate the speed if its above 0, else account for empty periods
-			if (ulRotations > 0) {
-				// i think i have 28-622 tires -> diam = 622mm -> C = d*pi = 62.2cm*3.14 = 195.308cm
-				const float cmPerRotation = 195.308f; 
-				ulSpeed = (ulRotations * cmPerRotation) / (xFrequency * usNoRotationCount * portTICK_PERIOD_MS);
-				// reset the empty period multiplier
-				usNoRotationCount = 1;
-			} else {
-				// no full rotation happened this period, 
-				// so next period we devide the rotations by 1 more cycle 
-				usNoRotationCount++;
-			}
-			// speed for which we dont update the avg.speed
-			const float IDLE_THRESHOLD = 2;
-			if (ulSpeed > IDLE_THRESHOLD) {
-				avg_speed += ulSpeed;
-				avg_speed /= 2; 
-			}
+		// speed for which we dont update the avg.speed
+		const float IDLE_THRESHOLD = 2;
+		if (local_speed > IDLE_THRESHOLD) {
+			avg_speed += local_speed;
+			avg_speed /= 2; 
 		}
-			// TODO screen printing, maybe move to another task
-			// then i would need to put a mutex or semaphore on the speed
 	}
 }
 
 
 
 void app_main() {
+	// starting the timer, used by the sensor ISR
+	/* looks like the timer get initialized automaticly before app_main
+	esp_timer_create_args_t timer_conf = {};
+	timer_conf.arg = 
+	esp_timer_create(&timer_conf, &timer_handle)
+	*/
+
+	// configuring gpio for the sensor
 	gpio_config_t io_conf = {
 		.pin_bit_mask = 1<<GPIO_SENSOR_INPUT,
 		.mode = GPIO_MODE_INPUT,
@@ -96,15 +90,13 @@ void app_main() {
 
 	gpio_config(&io_conf);
 
-	// queue for timestamp of sensor activation, or speed not sure yet
-	speed_queue = xQueueCreate(2, sizeof(uint32_t));
+	// register ISR handler
+	gpio_install_isr_service(ESP_INTR_FLAG_LEVEL1 | ESP_INTR_FLAG_EDGE);
+	gpio_isr_handler_add(GPIO_SENSOR_INPUT, vRotationSensorISR, NULL);
+
 
 	// create lock used to access the isr rotation counter
 	spinlock_initialize(&xISRLock);
 	// screen update task
 	xTaskCreatePinnedToCore(screen_update_task, "screen_updater", 2048, NULL, 5, &screen_updater_task_handle, APP_CPU_NUM);
-
-	// register ISR handler
-	gpio_install_isr_service(ESP_INTR_FLAG_LEVEL1 | ESP_INTR_FLAG_EDGE);
-	gpio_isr_handler_add(GPIO_SENSOR_INPUT, vRotationSensorISR, NULL);
 }
