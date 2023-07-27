@@ -1,0 +1,11 @@
+{
+    "files.associations": {
+        "stdlib.h": "c",
+        "esp_intr_alloc.h": "c",
+        "queue.h": "c",
+        "rtc.h": "c",
+        "timer.h": "c",
+        "gptimer.h": "c",
+        "esp_timer.h": "c"
+    }
+}
