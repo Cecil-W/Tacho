@@ -4,16 +4,16 @@
 #include "freertos/task.h"
 #include "driver/gpio.h"
 #include "esp_timer.h"
-#include "driver/i2c.h"
+#include "LovyanGFX.h"
 
 static TaskHandle_t screen_updater_task_handle = NULL;
 
 static spinlock_t xISRLock;
 static uint32_t isr_time_delta = 0;
 
-static const uint32_t GPIO_SENSOR_INPUT = 27;
+static const gpio_num_t GPIO_SENSOR_INPUT = GPIO_NUM_27;
 
-/// @brief Timer needs to be started before calling this function
+/// @brief Returns the time since boot in milliseconds. The timer is automatically started before app_main
 /// @return Time since boot in milli seconds
 uint32_t inline millis() {
 	return (uint32_t)(esp_timer_get_time() / 1000UL);
@@ -29,7 +29,7 @@ uint32_t inline millis() {
 		maybe use task notification (see freeRTOS) to update the scree? No
 		i think a constant refresh rate is better
 */
-static void IRAM_ATTR vRotationSensorISR() {
+static void IRAM_ATTR vRotationSensorISR(void *arg) {
 	static uint32_t time_of_last_ISR = 0;
 
 	uint32_t time = millis();
@@ -45,11 +45,11 @@ static void IRAM_ATTR vRotationSensorISR() {
 		- battery level?
 		- on time
 */
-static void screen_update_task() {
+static void screen_update_task(void *arg) {
 	TickType_t xLastWakeTime;
 	BaseType_t xWasDelayed;
-	const TickType_t xFrequency = 100; 
 	// 1 tick seems to be 10ms, gets defined in portTICK_PERIOD_MS
+	const TickType_t xFrequency = 100;
 	static uint32_t avg_speed = 0;
 
     printf("Hello from screen update task\n");
@@ -84,7 +84,10 @@ static void screen_update_task() {
 	}
 }
 
-
+// app_main needs to be visable to c linkage
+extern "C" {
+	void app_main();
+}
 
 void app_main() {
 	// starting the timer, used by the sensor ISR
@@ -101,9 +104,9 @@ void app_main() {
 	gpio_config_t io_conf = {
 		.pin_bit_mask = 1<<GPIO_SENSOR_INPUT,
 		.mode = GPIO_MODE_INPUT,
-		.intr_type = GPIO_INTR_POSEDGE,			// The reed Switch should be default "on" so this would need to be changed
+		.pull_up_en = GPIO_PULLUP_ENABLE,
 		.pull_down_en = GPIO_PULLDOWN_DISABLE,	// The reed Switch should be default "on" so this would need to be changed
-        .pull_up_en = GPIO_PULLUP_ENABLE
+		.intr_type = GPIO_INTR_POSEDGE,			// The reed Switch should be default "on" so this would need to be changed
 	};
 
 	gpio_config(&io_conf);
@@ -113,14 +116,15 @@ void app_main() {
 	gpio_isr_handler_add(GPIO_SENSOR_INPUT, vRotationSensorISR, NULL);
 
 
-    
+	
 	// create lock used to access the isr rotation counter
 	spinlock_initialize(&xISRLock);
 	// screen update task
 	xTaskCreatePinnedToCore(screen_update_task, "screen_updater", 2048, NULL, 5, &screen_updater_task_handle, APP_CPU_NUM);
 
-    while (true) {
-        vTaskDelay(500);
-        printf("main still running!\n");
-    }
+	while (true) {
+		vTaskDelay(500);
+		printf("main still running!\n");
+	}
 }
+
