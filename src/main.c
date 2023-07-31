@@ -68,13 +68,13 @@ static void screen_update_task() {
 		// if the time didnt get updated we can skip our calculations
 		if (local_isr_time_delta > 0) {
 			// speed = distance traveled in 1 rotation / time this rotation took in ms
-			// [speed] = 1 mm/ms = 1 m/s
-			const uint32_t mm_per_rotation = 1953;
-			speed = mm_per_rotation / local_isr_time_delta;
+			// [speed] = 1 micrometer/ms = 0.001 mm/ms = 0.001 m/s
+			const uint32_t um_per_rotation = 1953000;
+			speed = um_per_rotation / local_isr_time_delta;
 		}
 
-		float speed_kmh = speed * 3.6f;
-		printf("delta t=%lu\tCurrent Speed: %fmm/ms = %f km/h\n", local_isr_time_delta, speed, speed_kmh);
+		float speed_kmh = (speed) * 0.0036f;
+		printf("delta t=%lu\tCurrent Speed: %luum/ms = %f km/h\n", local_isr_time_delta, speed, speed_kmh);
 		// speed for which we dont update the avg.speed
 		const uint32_t IDLE_THRESHOLD = 2;
 		if (speed > IDLE_THRESHOLD) {
