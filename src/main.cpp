@@ -4,9 +4,10 @@
 #include "freertos/task.h"
 #include "driver/gpio.h"
 #include "esp_timer.h"
-#include "LovyanGFX.h"
+#include "oled_LGFX.h"
 
 static TaskHandle_t screen_updater_task_handle = NULL;
+static LGFX oled;
 
 static spinlock_t xISRLock;
 static uint32_t isr_time_delta = 0;
@@ -34,7 +35,7 @@ static void IRAM_ATTR vRotationSensorISR(void *arg) {
 
 	uint32_t time = millis();
 	uint32_t local_time_delta = time - time_of_last_ISR;
-	if (local_time_delta < 100) return;// assuming bouncing from the input 
+	if (local_time_delta < 100) return; // The reed switch is bouncy, 100ms is above 45 kmh which should be enough
 	isr_time_delta = local_time_delta;
 	time_of_last_ISR = time;
 }
@@ -63,7 +64,6 @@ static void screen_update_task(void *arg) {
 		// read the time between the last two sensor activations
 		taskENTER_CRITICAL(&xISRLock);
 		uint32_t local_isr_time_delta = isr_time_delta;
-		isr_time_delta = 0;
 		taskEXIT_CRITICAL(&xISRLock);
 		// if the time didnt get updated we can skip our calculations
 		if (local_isr_time_delta > 0) {
@@ -73,14 +73,23 @@ static void screen_update_task(void *arg) {
 			speed = um_per_rotation / local_isr_time_delta;
 		}
 
+		// speed formating for displaying
 		float speed_kmh = (speed) * 0.0036f;
-		printf("delta t=%lu\tCurrent Speed: %luum/ms = %f km/h\n", local_isr_time_delta, speed, speed_kmh);
+		printf("delta t=%lu\tCurrent Speed: %luum/ms = %.2f km/h\n", local_isr_time_delta, speed, speed_kmh);
+		static char string[256];
+		sprintf(string, "Speed: %.1f", speed_kmh);
+
 		// speed for which we dont update the avg.speed
 		const uint32_t IDLE_THRESHOLD = 2;
 		if (speed > IDLE_THRESHOLD) {
 			avg_speed += speed;
 			avg_speed /= 2; 
 		}
+
+		// display drawing
+		oled.startWrite();
+		oled.drawString(string, oled.width()>>1, 10);
+		oled.endWrite();
 	}
 }
 
@@ -90,15 +99,6 @@ extern "C" {
 }
 
 void app_main() {
-	// starting the timer, used by the sensor ISR
-	/* looks like the timer get initialized automaticly before app_main
-	esp_timer_create_args_t timer_conf = {};
-	timer_conf.arg = 
-	esp_timer_create(&timer_conf, &timer_handle)
-	*/
-
-	
-
 	/* disabled for testing */
 	// configuring gpio for the sensor
 	gpio_config_t io_conf = {
@@ -115,8 +115,15 @@ void app_main() {
 	gpio_install_isr_service(ESP_INTR_FLAG_IRAM | ESP_INTR_FLAG_EDGE);
 	gpio_isr_handler_add(GPIO_SENSOR_INPUT, vRotationSensorISR, NULL);
 
+	bool init_ok = oled.init();
+	printf("init status: %s\n", init_ok ? "Ok" : "Failed!");
 
-	
+	oled.startWrite();
+	oled.setTextDatum(textdatum_t::middle_center);
+	oled.drawString("Hello World!", oled.width()>>1, oled.height() >> 1);
+	oled.setTextDatum(textdatum_t::top_left);
+	oled.endWrite();
+
 	// create lock used to access the isr rotation counter
 	spinlock_initialize(&xISRLock);
 	// screen update task
@@ -127,4 +134,3 @@ void app_main() {
 		printf("main still running!\n");
 	}
 }
-
